@@ -1,0 +1,16 @@
+{
+    "name": "com.imd.ackit.multi_xr.XR",
+    "rootNamespace": "",
+    "references": [
+        "GUID:08260c3f78189fd42bf78e7a0c69139c"
+    ],
+    "includePlatforms": [],
+    "excludePlatforms": [],
+    "allowUnsafeCode": false,
+    "overrideReferences": false,
+    "precompiledReferences": [],
+    "autoReferenced": true,
+    "defineConstraints": [],
+    "versionDefines": [],
+    "noEngineReferences": false
+}
