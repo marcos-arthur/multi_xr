@@ -1,6 +1,7 @@
 using System;
 using System.Collections;
 using System.Collections.Concurrent;
+using System.Collections.Generic;
 using com.imd.ackit.multi_xr.Protocol;
 using UnityEngine;
 using UnityEngine.Events;
@@ -43,6 +44,8 @@ namespace com.imd.ackit.multi_xr.CustomWebSocket
         private int poseSequence;
         private PoseMessage lastSentPose;
         private bool isClosing = false;
+        private bool hasJoined = false;
+        private readonly Dictionary<string, int> lastSequenceByPlayer = new();
 
         // Mesmo parado, cada jogador manda um pose de tempos em tempos
         private const float intervalbetweenPlayerUpdate = 1f;
@@ -60,6 +63,9 @@ namespace com.imd.ackit.multi_xr.CustomWebSocket
         public event Action<ErrorMessage> ErrorReceived;
         public UnityEvent ConnectionFailed = new();
         public UnityEvent Disconnected = new();
+
+        /// <summary>The stable shared coordinate frame used for outgoing and incoming poses.</summary>
+        public Transform NetworkOrigin => networkOrigin;
         
 
         private Coroutine sendLoopPlayer;
@@ -123,6 +129,7 @@ namespace com.imd.ackit.multi_xr.CustomWebSocket
                 string json = JsonUtility.ToJson(joinMessage);
                 socket.Send(json);
 
+                lastSequenceByPlayer.Clear();
                 // StartCoroutine(OnConnect());
                 Debug.Log("✅ Conectado ao servidor. Join enviado.");
             });
@@ -171,6 +178,7 @@ namespace com.imd.ackit.multi_xr.CustomWebSocket
                     playerId = welcome.selfId;
 
                     if(welcome.role != "desktop_viewer") StartSendLoops();
+                    hasJoined = true;
 
                     Debug.Log($"Conexão estabelecida com {welcome.sessionId}");
                     break;
@@ -186,15 +194,29 @@ namespace com.imd.ackit.multi_xr.CustomWebSocket
                 case "player_left":
                     PlayerLeftMessage left = JsonUtility.FromJson<PlayerLeftMessage>(json); 
                     ParticipantLeft?.Invoke(left);
+                    lastSequenceByPlayer.Remove(left.playerId);
                     Debug.Log($"Usuário de id {left.playerId} saiu da sala");
                     break;
 
                 case "player_pose":
-                    PoseReceived?.Invoke(JsonUtility.FromJson<PlayerPoseMessage>(json));
+                    PlayerPoseMessage pose = JsonUtility.FromJson<PlayerPoseMessage>(json);
+                    if(pose == null || string.IsNullOrEmpty(pose.playerId)) break;
+
+                    if (lastSequenceByPlayer.TryGetValue(pose.playerId, out int lastSequence) && pose.sequence <= lastSequence) break;
+
+                    lastSequenceByPlayer[pose.playerId] = pose.sequence;
+                    PoseReceived?.Invoke(pose);
                     break;
 
                 case "error":
-                    ErrorReceived?.Invoke(JsonUtility.FromJson<ErrorMessage>(json));
+                    ErrorMessage error = JsonUtility.FromJson<ErrorMessage>(json);
+                    ErrorReceived?.Invoke(error);
+
+                    if (!hasJoined)
+                    {
+                        CloseConnection();
+                    }
+
                     break;
             }
         }
@@ -261,6 +283,15 @@ namespace com.imd.ackit.multi_xr.CustomWebSocket
             if (networkOrigin == null)
             {
                 error = "Network Origin não foi configurado.";
+                return false;
+            }
+
+            Vector3 originScale = networkOrigin.lossyScale;
+            if (Mathf.Abs(originScale.x - 1f) > 0.001f ||
+                Mathf.Abs(originScale.y - 1f) > 0.001f ||
+                Mathf.Abs(originScale.z - 1f) > 0.001f)
+            {
+                error = "Network Origin e seus pais devem manter escala (1, 1, 1).";
                 return false;
             }
 

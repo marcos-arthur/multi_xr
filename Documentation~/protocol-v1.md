@@ -149,7 +149,7 @@ Quando o servidor rejeita uma entrada:
 }
 ```
 
-Códigos iniciais: `ROOM_FULL`, `PROTOCOL_VERSION_UNSUPPORTED`, `INVALID_ROLE`, `INVALID_MESSAGE`, `INVALID_POSE`.
+Códigos iniciais: `ROOM_FULL`, `PROTOCOL_VERSION_UNSUPPORTED`, `INVALID_ROLE`, `INVALID_MESSAGE`, `INVALID_POSE`, `ROOM_NOT_FOUND`, `INVALID_NAME`, `UNKNOWN_MESSAGE_ERROR`.
 
 ## Comportamento do servidor
 

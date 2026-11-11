@@ -2,7 +2,8 @@
     "name": "com.imd.ackit.multi_xr.XR",
     "rootNamespace": "",
     "references": [
-        "GUID:08260c3f78189fd42bf78e7a0c69139c"
+        "GUID:08260c3f78189fd42bf78e7a0c69139c",
+        "GUID:0cc595cde32a5cb498d5ed514143e137"
     ],
     "includePlatforms": [],
     "excludePlatforms": [],
