@@ -1,166 +1,120 @@
 # Protocolo WebSocket v1
 
-## Escopo
+Este documento descreve as mensagens atualmente implementadas em `multi_xr` e `multi_xr_server`. Mensagens são objetos JSON enviados em frames WebSocket. Cliente e servidor devem usar `protocolVersion: 1`.
 
-O protocolo conecta até cinco participantes na mesma sala:
+## Sessão e identidade
 
-- `quest_player`: envia sua pose e recebe as poses dos demais.
-- `desktop_viewer`: recebe poses, mas não publica avatar.
+- O servidor atual aceita a sala `sala-local` e até cinco conexões ingressadas, incluindo `desktop_viewer`.
+- `role` aceita `quest_player` e `desktop_viewer`.
+- `displayName` é texto não vazio, limitado a 32 caracteres.
+- `displayColor` é uma string RGB hexadecimal com seis dígitos, sem `#` (`RRGGBB`), por exemplo `FF8800`. O cliente Unity envia esse formato por `ColorUtility.ToHtmlStringRGB`; o servidor rejeita formatos inválidos.
+- Não há `clientId` escolhido pelo cliente: o servidor atribui `playerId`/`selfId`.
+- Não há timestamp de envio nem frequência negociada no protocolo v1.
 
-O servidor Bun retransmite as mensagens para os clientes da mesma sala. Nesta versão, a prioridade é testar na rede local. Todos os dispositivos devem conectar ao IP do computador que está executando o servidor, na porta TCP `7777`.
+## Mensagens
 
-## Regras dos dados de pose
-
-- Posições são expressas em metros.
-- Rotações são quaternions no formato `{ "x": 0, "y": 0, "z": 0, "w": 1 }`.
-- As poses são relativas ao mesmo objeto `NetworkOrigin`, presente na mesma posição, rotação e escala em todos os clientes.
-- Cada pose contém `position` e `rotation`.
-- `root` posiciona o corpo do avatar.
-- `head`, `leftHand` e `rightHand` orientam a cabeça e as mãos. O corpo pode ser animado por IK no cliente que recebe as poses.
-- Mãos podem ser `null` quando o tracking correspondente não estiver disponível.
-- `sequence` aumenta a cada pose enviada pelo mesmo participante. O cliente pode ignorar poses com sequência anterior à última recebida.
-
-## Cliente → servidor: `join`
-
-Enviado uma vez, logo após abrir a conexão WebSocket.
+### Cliente → servidor: `join`
 
 ```json
 {
   "protocolVersion": 1,
   "type": "join",
   "roomId": "sala-local",
-  "clientId": "quest-a-001",
   "role": "quest_player",
-  "displayName": "Quest A"
+  "displayName": "Quest A",
+  "displayColor": "FF8800"
 }
 ```
 
-`role` deve ser `quest_player` ou `desktop_viewer`. O servidor deve rejeitar versões incompatíveis, salas cheias e papéis não aceitos.
+### Servidor → cliente: `welcome`
 
-## Servidor → cliente: `welcome`
-
-Confirma a entrada e fornece a lista dos participantes que já estão na sala. Isso permite que um participante que chegou depois descubra quem já está conectado.
+Confirma o ingresso e lista quem já estava na sala. O `displayColor` de cada participante segue o formato `RRGGBB`.
 
 ```json
 {
   "protocolVersion": 1,
   "type": "welcome",
   "sessionId": "sala-local",
-  "selfId": "player-001",
+  "selfId": "id-atribuido-pelo-servidor",
   "role": "quest_player",
   "players": [
     {
-      "playerId": "player-002",
+      "playerId": "outro-id",
       "role": "quest_player",
-      "displayName": "Quest B"
+      "displayName": "Quest B",
+      "displayColor": "33AAFF"
     }
   ]
 }
 ```
 
-O servidor atribui `selfId` e associa esse identificador à conexão. O cliente não escolhe o `playerId` usado nas mensagens de pose.
+O jogador que acabou de entrar não está na sua própria lista `players`. O `welcome` contém o papel local, mas a cor local não é ecoada.
 
-## Quest → servidor: `pose`
-
-Enviado somente por participantes com papel `quest_player`. A frequência inicial sugerida é de 15 mensagens por segundo.
-
-```json
-{
-  "protocolVersion": 1,
-  "type": "pose",
-  "sequence": 42,
-  "root": {
-    "position": { "x": 1.2, "y": 0.0, "z": -0.4 },
-    "rotation": { "x": 0.0, "y": 0.7, "z": 0.0, "w": 0.7 }
-  },
-  "head": {
-    "position": { "x": 1.2, "y": 1.65, "z": -0.4 },
-    "rotation": { "x": 0.0, "y": 0.7, "z": 0.0, "w": 0.7 }
-  },
-  "leftHand": null,
-  "rightHand": {
-    "position": { "x": 1.5, "y": 1.2, "z": -0.2 },
-    "rotation": { "x": 0.0, "y": 0.0, "z": 0.0, "w": 1.0 }
-  }
-}
-```
-
-O servidor identifica o remetente pela conexão. Não deve aceitar um `playerId` arbitrário no corpo da mensagem.
-
-## Servidor → participantes: `player_pose`
-
-O servidor inclui o ID associado à conexão e retransmite a pose aos demais participantes da sala. O cliente que enviou a pose não precisa recebê-la de volta.
-
-```json
-{
-  "protocolVersion": 1,
-  "type": "player_pose",
-  "playerId": "player-001",
-  "sequence": 42,
-  "root": {
-    "position": { "x": 1.2, "y": 0.0, "z": -0.4 },
-    "rotation": { "x": 0.0, "y": 0.7, "z": 0.0, "w": 0.7 }
-  },
-  "head": {
-    "position": { "x": 1.2, "y": 1.65, "z": -0.4 },
-    "rotation": { "x": 0.0, "y": 0.7, "z": 0.0, "w": 0.7 }
-  },
-  "leftHand": null,
-  "rightHand": {
-    "position": { "x": 1.5, "y": 1.2, "z": -0.2 },
-    "rotation": { "x": 0.0, "y": 0.0, "z": 0.0, "w": 1.0 }
-  }
-}
-```
-
-## Servidor → clientes: presença e erros
-
-Quando alguém entra:
+### Servidor → clientes existentes: `player_joined`
 
 ```json
 {
   "protocolVersion": 1,
   "type": "player_joined",
-  "playerId": "player-001",
+  "playerId": "id-atribuido-pelo-servidor",
   "role": "quest_player",
-  "displayName": "Quest A"
+  "displayName": "Quest A",
+  "displayColor": "FF8800"
 }
 ```
 
-Quando alguém sai ou perde a conexão:
+### Cliente `quest_player` → servidor: `player_pose`
+
+```json
+{
+  "protocolVersion": 1,
+  "type": "player_pose",
+  "sequence": 42,
+  "root": {
+    "position": { "x": 0.0, "y": 0.0, "z": 0.0 },
+    "rotation": { "x": 0.0, "y": 0.0, "z": 0.0, "w": 1.0 }
+  },
+  "head": {
+    "position": { "x": 0.0, "y": 1.65, "z": 0.0 },
+    "rotation": { "x": 0.0, "y": 0.0, "z": 0.0, "w": 1.0 }
+  },
+  "leftHand": null,
+  "rightHand": null
+}
+```
+
+Root e cabeça são obrigatórios; cada pose é composta por posição `{x,y,z}` e quaternion `{x,y,z,w}`. Mãos podem ser `null` quando indisponíveis. Valores numéricos devem ser finitos e o quaternion não pode ser nulo. Posições e rotações são relativas ao `NetworkOrigin`; os participantes precisam compartilhar o mesmo referencial lógico e usar origem com escala efetiva unitária.
+
+O `sequence` é inteiro crescente por jogador. O servidor retransmite a pose aos outros clientes com `playerId` atribuído e campos de protocolo. O receptor Unity descarta poses cuja sequência não seja maior que a última aceita daquele jogador. O contador é reiniciado ao abrir uma nova conexão.
+
+`playerSendHz` controla a frequência de amostragem máxima no cliente Unity (padrão 20 Hz), não é um campo negociado. A pose é enviada quando posição/rotação ultrapassa os thresholds configurados ou após um segundo sem envio. `desktop_viewer` não publica poses.
+
+### Servidor → clientes: `player_left`
 
 ```json
 {
   "protocolVersion": 1,
   "type": "player_left",
-  "playerId": "player-001",
+  "playerId": "id-atribuido-pelo-servidor",
   "reason": "disconnected"
 }
 ```
 
-Quando o servidor rejeita uma entrada:
+`reason` informa o motivo fornecido pelo servidor, por exemplo `disconnected`.
+
+### Servidor → cliente: `error`
 
 ```json
 {
   "protocolVersion": 1,
   "type": "error",
-  "code": "ROOM_FULL",
-  "message": "A sala já tem cinco participantes."
+  "code": "INVALID_COLOR",
+  "message": "Display color must be six hexadecimal RGB characters (RRGGBB), without '#'."
 }
 ```
 
-Códigos iniciais: `ROOM_FULL`, `PROTOCOL_VERSION_UNSUPPORTED`, `INVALID_ROLE`, `INVALID_MESSAGE`, `INVALID_POSE`, `ROOM_NOT_FOUND`, `INVALID_NAME`, `UNKNOWN_MESSAGE_ERROR`.
+O servidor usa códigos como `INVALID_MESSAGE`, `PROTOCOL_VERSION_UNSUPPORTED`, `ROOM_NOT_FOUND`, `INVALID_ROLE`, `INVALID_NAME`, `INVALID_COLOR`, `ROOM_FULL`, `INVALID_POSE` e `UNKNOWN_MESSAGE_ERROR`. O campo `message` descreve a rejeição. Em rejeição ao join, o cliente Unity notifica `ErrorReceived` e fecha a conexão.
 
-## Comportamento do servidor
+## Compatibilidade
 
-1. Aceita até cinco conexões na sala.
-2. Recebe `join` e valida a versão, sala e papel.
-3. Responde `welcome` com os participantes existentes.
-4. Avisa os participantes existentes com `player_joined`.
-5. Aceita `pose` somente de `quest_player`.
-6. Valida os campos e retransmite como `player_pose` aos demais participantes.
-7. Ao desconectar, envia `player_left` e remove o participante da sala.
-
-## Fora do escopo desta versão
-
-Voz, objetos sincronizados, interações, movimento de objetos, descoberta pela Internet e autenticação de produção. O beacon UDP `47777` pode ajudar a encontrar o servidor na LAN, mas não é necessário quando o IP do servidor é informado diretamente.
+`displayColor` é obrigatório no `join` e nos dados de participante usados no roster/evento de entrada. Clientes e servidores anteriores que não implementem esse campo devem ser atualizados juntos. O servidor não transmite no `welcome` os dados de aparência do próprio jogador, pois o cliente já os configurou localmente.
