@@ -31,6 +31,7 @@ namespace com.imd.ackit.multi_xr.CustomWebSocket
         // ====== CONFIG DOS TRANSFORMS DO PLAYER LOCAL ======
         [Header("Transforms locais")]
         [SerializeField] private Transform networkOrigin;
+        [Tooltip("Set as XR Origin (XR Rig) Gameobject for now.")]
         [SerializeField] private Transform root;
         [SerializeField] private Transform head;
         [SerializeField] private Transform leftHand;
@@ -75,11 +76,8 @@ namespace com.imd.ackit.multi_xr.CustomWebSocket
             playerId = "player_" + UnityEngine.Random.Range(1000, 9999);
 
             WelcomeReceived += message => Debug.Log($"Entrou: {message.selfId}; participantes existentes: {message.players?.Length ?? 0}");
-
             ParticipantJoined += message => Debug.Log($"Participante entrou: {message.displayName} ({message.playerId})");
-
             ParticipantLeft += message => Debug.Log($"Participante saiu: {message.playerId}; motivo: {message.reason}");
-
             ErrorReceived += message => Debug.LogError($"Erro do servidor: {message.code} - {message.message}");
             
             OpenConection();
