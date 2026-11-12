@@ -11,5 +11,6 @@ namespace com.imd.ackit.multi_xr.Protocol
         public string playerId;
         public string role;
         public string displayName;
+        public string displayColor;
     }
 }

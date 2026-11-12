@@ -29,6 +29,7 @@ namespace com.imd.ackit.multi_xr.XR
 
         public string PlayerId { get; private set; }
         public string DisplayName { get; private set; }
+        public string DisplayColor { get; private set; }
 
         internal bool Initialize(PlayerData player, Transform sharedOrigin)
         {
@@ -61,6 +62,7 @@ namespace com.imd.ackit.multi_xr.XR
 
             PlayerId = player.playerId;
             DisplayName = player.displayName;
+            DisplayColor = player.displayColor;
             networkOrigin = sharedOrigin;
 
             rootTarget.transform = root;
