@@ -2,7 +2,7 @@
   "name": "com.imd.ackit.multi_xr",
   "version": "1.0.0",
   "displayName": "Multi XR",
-  "description": "A Multiplayer package aiming for XR Projetcts using WebSocket.",
+  "description": "A Multiplayer package aiming for XR Projetcts using WebSocket made in collaboration with SteffWolf and Marcos Arthur.",
   "Unity": "6000.0",
   "author": {
     "name": "StefWolf"
