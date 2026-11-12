@@ -73,7 +73,8 @@ namespace com.imd.ackit.multi_xr.XR
             {
                 playerId = participant.playerId,
                 role = participant.role,
-                displayName = participant.displayName
+                displayName = participant.displayName,
+                displayColor = participant.displayColor
             });
         }
 

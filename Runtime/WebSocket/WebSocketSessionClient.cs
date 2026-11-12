@@ -12,16 +12,18 @@ namespace com.imd.ackit.multi_xr.CustomWebSocket
     public sealed class WebSocketSessionClient : MonoBehaviour
     {
         // ====== CONFIG GERAIS DO SERVIDOR ======
-        [Header("Configurações do servidor")]
+        [Header("Configurações de comunicação com o servidor")]
         [SerializeField] private string serverIp = "192.168.0.10";
         [SerializeField] private string serverPort = "7777";
         [SerializeField] private int maxMessagesPerFrame = 20; // evita travar em bursts
         [SerializeField] private string roomId = "sala-local";
 
         // ====== CONFIG GERAIS DO CLIENT ======
+        [Header("Configurações do client")]
         //Pose ser quest_player ou desktop_viewer
         [SerializeField] private string role = "quest_player";
         [SerializeField] private string displayName = "Quest A";
+        [SerializeField] private Color displayColor = new();
 
 
         // ====== CONFIG DE REDE (TAXAS) ======
@@ -52,6 +54,7 @@ namespace com.imd.ackit.multi_xr.CustomWebSocket
         private const float intervalbetweenPlayerUpdate = 1f;
         private float timeSinceLastPlayerUpdate;
         
+        private Coroutine sendLoopPlayer;
         private readonly ConcurrentQueue<string> messageQueue = new ConcurrentQueue<string>();
         // Eventos do websocket (OnOpen/OnClose/OnError) chegam em outra thread; a API da Unity
         // so pode ser usada na thread principal, entao eles sao executados no Update.
@@ -67,14 +70,15 @@ namespace com.imd.ackit.multi_xr.CustomWebSocket
 
         /// <summary>The stable shared coordinate frame used for outgoing and incoming poses.</summary>
         public Transform NetworkOrigin => networkOrigin;
-        
-
-        private Coroutine sendLoopPlayer;
+        public string ServerIp => serverIp;
+        public string ServerPort => serverPort;
+        public string RoomId => roomId;
+        public string Role => role;
+        public string DisplayName => displayName;
+        public Color DisplayColor => displayColor;
 
         void Start()
         {
-            playerId = "player_" + UnityEngine.Random.Range(1000, 9999);
-
             WelcomeReceived += message => Debug.Log($"Entrou: {message.selfId}; participantes existentes: {message.players?.Length ?? 0}");
             ParticipantJoined += message => Debug.Log($"Participante entrou: {message.displayName} ({message.playerId})");
             ParticipantLeft += message => Debug.Log($"Participante saiu: {message.playerId}; motivo: {message.reason}");
@@ -112,9 +116,9 @@ namespace com.imd.ackit.multi_xr.CustomWebSocket
             JoinMessage joinMessage = new()
             {
                 roomId = roomId,
-                clientId = playerId,
                 role = role,
-                displayName = displayName
+                displayName = displayName,
+                displayColor = ColorUtility.ToHtmlStringRGB(displayColor)
             };
 
             WebSocket socket = new($"ws://{serverIp}:{serverPort}");

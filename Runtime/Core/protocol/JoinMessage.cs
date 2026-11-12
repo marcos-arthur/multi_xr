@@ -12,8 +12,8 @@ namespace com.imd.ackit.multi_xr.Protocol
         public string type = "join";
 
         public string roomId;
-        public string clientId;
         public string role;
         public string displayName;
+        public string displayColor;
     }
 }
