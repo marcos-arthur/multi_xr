@@ -15,5 +15,6 @@ namespace com.imd.ackit.multi_xr.Protocol
         public string role;
         public string displayName;
         public string displayColor;
+        public string reservationToken;
     }
 }

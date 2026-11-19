@@ -17,8 +17,9 @@ Adicione o componente a um GameObject da cena. A conexão e o envio do `join` co
 | `Max Messages Per Frame` | `20` | Limite por frame para mensagens de sessão e poses. |
 | `Max App Messages Per Frame` | `10` | Limite independente por frame para mensagens `app`. |
 | `Room Id` | `sala-local` | Sala solicitada no `join`. |
-| `Role` | `quest_player` | Papel enviado ao servidor: `quest_player` ou `desktop_viewer`. |
+| `Role` | `quest_player` | Papel enviado ao servidor: `quest_player`, `desktop_viewer` ou `identity_lobby` (uso interno da cena de identidade). |
 | `Display Name` | `Quest A` | Nome enviado no `join`. |
+| `Reservation Token` | vazio | Token opcional para reclamar uma reserva temporária de cor no `join`. |
 | `Display Color` | padrão do Unity | Cor convertida para seis dígitos hexadecimais RGB sem `#` no protocolo (`RRGGBB`). |
 | `Player Send Hz` | `20` | Frequência máxima de amostragem/envio de poses. |
 | `Network Origin` | sem referência | Referencial compartilhado para converter poses locais e remotas. Deve permanecer estável e ter escala efetiva `(1,1,1)`. |
@@ -27,7 +28,7 @@ Adicione o componente a um GameObject da cena. A conexão e o envio do `join` co
 | `Position Threshold` | `0.002` | Deslocamento mínimo (metros) para considerar que a pose mudou. |
 | `Rotation Threshold Degrees` | `0.5` | Rotação mínima (graus) para considerar que a pose mudou. |
 
-O cliente amostra conforme `Player Send Hz`, mas transmite quando a pose ultrapassa um dos limites ou quando passa um segundo sem envio (heartbeat). A sequência é incrementada nos envios e poses recebidas com sequência repetida ou anterior são descartadas por jogador. O papel `desktop_viewer` não inicia envio de poses.
+O cliente amostra conforme `Player Send Hz`, mas transmite quando a pose ultrapassa um dos limites ou quando passa um segundo sem envio (heartbeat). A sequência é incrementada nos envios e poses recebidas com sequência repetida ou anterior são descartadas por jogador. Os papéis `desktop_viewer` e `identity_lobby` não iniciam envio de poses.
 
 ### Propriedades públicas
 
@@ -41,6 +42,7 @@ string RoomId { get; }
 string Role { get; }
 string DisplayName { get; }
 Color DisplayColor { get; }
+string ReservationToken { get; }
 ```
 
 ### Métodos públicos
@@ -53,7 +55,7 @@ bool SendAppMessage(string channel, string payload, string to = null);
 
 `IsConnected` informa se o socket está aberto. `CloseConnection` inicia o fechamento da conexão e encerra os loops de envio. Para mudar endereço, sala, papel, nome ou cor, configure os campos no Inspector antes de iniciar o componente.
 
-`SendAppMessage` deve ser chamado na thread principal da Unity. Nesta versão, `channel` aceita somente `pointer`; `payload` é texto opaco para o pacote. `to` nulo ou vazio transmite aos demais participantes; um id direciona a mensagem a um participante, que o servidor ainda precisa validar. O método retorna `true` quando o envelope foi aceito pela fila local, não quando foi confirmado pelo servidor.
+`SendAppMessage` deve ser chamado na thread principal da Unity. `channel` aceita `pointer` ou `identity`; o servidor restringe `identity` a `identity_lobby`, e Pointer não deve ser enviado por esse papel. `payload` é texto opaco para o pacote. `to` nulo ou vazio transmite aos demais participantes; um id direciona a mensagem a um participante, que o servidor ainda precisa validar. O método retorna `true` quando o envelope foi aceito pela fila local, não quando foi confirmado pelo servidor.
 
 O cliente limita cada envelope serializado a 64 KiB UTF-8, e a fila de saída a 128 KiB e 256 mensagens, contando o envio em andamento. Se estiver desconectado, os argumentos forem inválidos, a mensagem exceder o limite ou a fila estiver cheia, retorna `false`. Envios aceitos são enviados em ordem por `SendAsync`, um por vez. O callback confirma apenas a conclusão local do envio WebSocket; não é confirmação de aplicação.
 
@@ -67,7 +69,7 @@ Mensagens recebidas são classificadas no callback de rede e encaminhadas a fila
 | `ParticipantJoined` | `Action<PlayerJoinedMessage>` | Quando outro participante entra. Não dispara para o próprio jogador. |
 | `ParticipantLeft` | `Action<PlayerLeftMessage>` | Quando um participante sai. |
 | `PoseReceived` | `Action<PlayerPoseMessage>` | Para cada pose válida e mais recente recebida de outro jogador. |
-| `AppMessageReceived` | `Action<AppMessage>` | Para cada mensagem `app` válida do canal `pointer`, incluindo o `playerId` de origem definido pelo servidor. |
+| `AppMessageReceived` | `Action<AppMessage>` | Para cada mensagem `app` entregue, incluindo `playerId`, canal e payload. |
 | `ErrorReceived` | `Action<ErrorMessage>` | Quando chega uma mensagem `error`; em rejeição antes do join o cliente fecha a conexão. |
 | `ConnectionFailed` | `UnityEvent` | Quando o WebSocket reporta erro. |
 | `Disconnected` | `UnityEvent` | Quando o WebSocket fecha. |

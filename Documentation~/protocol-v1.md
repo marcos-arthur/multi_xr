@@ -4,8 +4,8 @@ Este documento descreve as mensagens atualmente implementadas em `multi_xr` e `m
 
 ## Sessão e identidade
 
-- O servidor atual aceita a sala `sala-local` e até cinco conexões ingressadas, incluindo `desktop_viewer`.
-- `role` aceita `quest_player` e `desktop_viewer`.
+- O servidor atual aceita a sala `sala-local` e até 10 participantes ativos (`quest_player` e `desktop_viewer`, somados). Sessões temporárias `identity_lobby` têm limite separado de 20 conexões e não ocupam vaga ativa.
+- `role` aceita `quest_player`, `desktop_viewer` e `identity_lobby`. A sessão de identidade recebe roster e reservas, mas não envia poses nem mensagens Pointer.
 - `displayName` é texto não vazio, limitado a 32 caracteres.
 - `displayColor` é uma string RGB hexadecimal com seis dígitos, sem `#` (`RRGGBB`), por exemplo `FF8800`. O cliente Unity envia esse formato por `ColorUtility.ToHtmlStringRGB`; o servidor rejeita formatos inválidos.
 - Não há `clientId` escolhido pelo cliente: o servidor atribui `playerId`/`selfId`.
@@ -22,9 +22,12 @@ Este documento descreve as mensagens atualmente implementadas em `multi_xr` e `m
   "roomId": "sala-local",
   "role": "quest_player",
   "displayName": "Quest A",
-  "displayColor": "FF8800"
+  "displayColor": "FF8800",
+  "reservationToken": "token-opcional-de-32-hex"
 }
 ```
+
+`reservationToken` é opcional e usado pelo fluxo do Cave-visualization para transferir ao jogador a reserva temporária de cor obtida na cena de identidade. O servidor valida a cor no ingresso e rejeita cores ativas ou reservadas por outra sessão.
 
 ### Servidor → cliente: `welcome`
 
@@ -121,8 +124,10 @@ O servidor usa códigos como `INVALID_MESSAGE`, `PROTOCOL_VERSION_UNSUPPORTED`, 
 
 ## Mensagens de aplicação (`app`)
 
-Após o `join`, o servidor aceita `app` de `quest_player` e `desktop_viewer`, atualmente apenas no canal `pointer`. O envelope completo tem limite de 64 KiB em UTF-8; o servidor limita cada origem a 240 mensagens e 2 MiB por janela de um segundo. O envio sem `to` vai a todos os outros participantes; `to` precisa identificar outro participante da mesma sala. O servidor injeta `playerId` no envelope de saída e não retransmite ao emissor. O cliente só considera `SendAppMessage` aceito quando entrou na fila local, sem confirmação de entrega.
+Após o `join`, o servidor aceita `app` de `quest_player`, `desktop_viewer` e `identity_lobby`, com restrições por canal descritas abaixo. O envelope completo tem limite de 64 KiB em UTF-8; o servidor limita cada origem a 240 mensagens e 2 MiB por janela de um segundo. O envio sem `to` vai aos outros participantes permitidos; `to` precisa identificar outro participante da mesma sala. O servidor injeta `playerId` no envelope de saída e não retransmite ao emissor. O cliente só considera `SendAppMessage` aceito quando entrou na fila local, sem confirmação de entrega.
 
-O `payload` é uma string contendo JSON do PointerWire v1. O servidor valida tipo, campos, limites e autoria dos objetos: remoção só pode atingir objetos registrados para o autor, e `strokes_clear`/`measures_clear` globais são rejeitados. IDs de objetos são mantidos em memória durante a vida do processo; não existe persistência quando todos saem ou o servidor reinicia. Snapshots direcionados usam `board_request` e `board_snapshot`, divididos em partes por traço/medida; as partes respeitam 28 KiB no Pointer para manter margem dentro do limite externo. O novo participante bufferiza alterações ao vivo até concluir snapshot, com teto de 128 mensagens/256 KiB; exceder o teto encerra a conexão para evitar estado silenciosamente divergente.
+O canal `pointer` é aceito por `quest_player` e `desktop_viewer`; o payload contém JSON PointerWire v1 e o servidor valida tipo, campos, limites e autoria dos objetos. O canal `identity` é restrito a `identity_lobby` e recebe comandos JSON v1: `color_list_request` (token opcional), `color_reserve` (`color` em `RRGGBB`, token GUID N e nome), e `color_release`. Reservas duram 120 segundos e são renovadas pelo lobby; a lista pública informa cor, nome e expiração, enquanto a listagem individual pode incluir o token da própria reserva. O servidor valida reservas e transferência no `join` de `quest_player`. Sessões identity_lobby não recebem eventos de pose nem consomem vagas ativas.
+
+Para Pointer, remoção só pode atingir objetos registrados para o autor, e `strokes_clear`/`measures_clear` globais são rejeitados. IDs de objetos são mantidos em memória durante a vida do processo; não existe persistência quando todos saem ou o servidor reinicia. Snapshots direcionados usam `board_request` e `board_snapshot`, divididos em partes por traço/medida; as partes respeitam 28 KiB no Pointer para manter margem dentro do limite externo. O novo participante bufferiza alterações ao vivo até concluir snapshot, com teto de 128 mensagens/256 KiB; exceder o teto encerra a conexão para evitar estado silenciosamente divergente.
 
 Erros comuns incluem `UNKNOWN_MESSAGE_TYPE`, `UNKNOWN_APP_CHANNEL`, `APP_MESSAGE_TOO_LARGE`, `APP_RATE_LIMITED`, `INVALID_RECIPIENT`, `INVALID_POINTER_MESSAGE`, `POINTER_NOT_OWNED`, `POINTER_AUTHOR_MISMATCH`, `GLOBAL_CLEAR_FORBIDDEN` e `POINTER_CAPACITY_REACHED`. Três mensagens inválidas fecham a conexão. Sob backpressure, a conexão lenta é encerrada; o remetente não recebe confirmação de aplicação.

@@ -42,10 +42,11 @@ namespace com.imd.ackit.multi_xr.CustomWebSocket
 
         // ====== CONFIG GERAIS DO CLIENT ======
         [Header("Configurações do client")]
-        //Pose ser quest_player ou desktop_viewer
+        //Pode ser quest_player, desktop_viewer ou identity_lobby (sessão auxiliar sem pose).
         [SerializeField] private string role = "quest_player";
         [SerializeField] private string displayName = "Quest A";
         [SerializeField] private Color displayColor = new();
+        [SerializeField] private string reservationToken = string.Empty;
 
 
         // ====== CONFIG DE REDE (TAXAS) ======
@@ -108,6 +109,7 @@ namespace com.imd.ackit.multi_xr.CustomWebSocket
         public string Role => role;
         public string DisplayName => displayName;
         public Color DisplayColor => displayColor;
+        public string ReservationToken => reservationToken;
         void Start()
         {
             WelcomeReceived += message => Debug.Log($"Entrou: {message.selfId}; participantes existentes: {message.players?.Length ?? 0}");
@@ -158,7 +160,8 @@ namespace com.imd.ackit.multi_xr.CustomWebSocket
                 roomId = roomId,
                 role = role,
                 displayName = displayName,
-                displayColor = ColorUtility.ToHtmlStringRGB(displayColor)
+                displayColor = ColorUtility.ToHtmlStringRGB(displayColor),
+                reservationToken = reservationToken
             };
 
             WebSocket socket = new($"ws://{serverIp}:{serverPort}");
@@ -307,7 +310,7 @@ namespace com.imd.ackit.multi_xr.CustomWebSocket
                     hasJoined = true;
                     WelcomeReceived?.Invoke(welcome);
 
-                    if(welcome.role != "desktop_viewer") StartSendLoops();
+                    if(welcome.role == "quest_player") StartSendLoops();
 
                     Debug.Log($"Conexão estabelecida com {welcome.sessionId}");
                     break;
@@ -555,7 +558,7 @@ namespace com.imd.ackit.multi_xr.CustomWebSocket
             return true;
         }
 
-        private static bool IsAllowedAppChannel(string channel) => channel == "pointer";
+        private static bool IsAllowedAppChannel(string channel) => channel == "pointer" || channel == "identity";
 
         private void StartNextAppSend()
         {
