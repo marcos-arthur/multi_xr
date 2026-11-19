@@ -2,6 +2,8 @@ using System;
 using System.Collections;
 using System.Collections.Concurrent;
 using System.Collections.Generic;
+using System.Text;
+using System.Threading;
 using com.imd.ackit.multi_xr.Protocol;
 using UnityEngine;
 using UnityEngine.Events;
@@ -11,11 +13,31 @@ namespace com.imd.ackit.multi_xr.CustomWebSocket
 {
     public sealed class WebSocketSessionClient : MonoBehaviour
     {
+        private const int MaxAppEnvelopeBytes = 64 * 1024;
+        private const int MaxPendingAppBytes = 128 * 1024;
+        private const int MaxPendingAppMessages = 256;
+        private const int MaxAppRecipientLength = 128;
+        private const int MaxQueuedAppReceiveBytes = 256 * 1024;
+        private const int MaxQueuedAppReceiveMessages = 128;
+
+        private sealed class PendingAppSend
+        {
+            public string Json;
+            public int ByteCount;
+        }
+
+        private sealed class IncomingAppMessage
+        {
+            public string Json;
+            public int ByteCount;
+        }
+
         // ====== CONFIG GERAIS DO SERVIDOR ======
         [Header("Configurações de comunicação com o servidor")]
         [SerializeField] private string serverIp = "192.168.0.10";
         [SerializeField] private string serverPort = "7777";
         [SerializeField] private int maxMessagesPerFrame = 20; // evita travar em bursts
+        [SerializeField, Min(1)] private int maxAppMessagesPerFrame = 10;
         [SerializeField] private string roomId = "sala-local";
 
         // ====== CONFIG GERAIS DO CLIENT ======
@@ -56,14 +78,24 @@ namespace com.imd.ackit.multi_xr.CustomWebSocket
         
         private Coroutine sendLoopPlayer;
         private readonly ConcurrentQueue<string> messageQueue = new ConcurrentQueue<string>();
-        // Eventos do websocket (OnOpen/OnClose/OnError) chegam em outra thread; a API da Unity
-        // so pode ser usada na thread principal, entao eles sao executados no Update.
+        private readonly Queue<PendingAppSend> appSendQueue = new();
+        private int queuedAppBytes;
+        private int inFlightAppBytes;
+        private bool appSendInProgress;
+        private int appSendGeneration;
+        private readonly object appReceiveLock = new();
+        private readonly Queue<IncomingAppMessage> appReceiveQueue = new();
+        private int queuedAppReceiveBytes;
+        private int appReceiveOverflowSignaled;
+        // Callbacks de rede podem rodar fora da thread Unity. Só classificamos JSON simples e usamos
+        // filas thread-safe neles; eventos e APIs de cena são executados em Update.
         private readonly ConcurrentQueue<Action> mainThreadActions = new();
 
         public event Action<WelcomeMessage> WelcomeReceived;
         public event Action<PlayerJoinedMessage> ParticipantJoined;
         public event Action<PlayerLeftMessage> ParticipantLeft;
         public event Action<PlayerPoseMessage> PoseReceived;
+        public event Action<AppMessage> AppMessageReceived;
         public event Action<ErrorMessage> ErrorReceived;
         public UnityEvent ConnectionFailed = new();
         public UnityEvent Disconnected = new();
@@ -76,7 +108,6 @@ namespace com.imd.ackit.multi_xr.CustomWebSocket
         public string Role => role;
         public string DisplayName => displayName;
         public Color DisplayColor => displayColor;
-
         void Start()
         {
             WelcomeReceived += message => Debug.Log($"Entrou: {message.selfId}; participantes existentes: {message.players?.Length ?? 0}");
@@ -99,6 +130,15 @@ namespace com.imd.ackit.multi_xr.CustomWebSocket
             {
                 HandleIncomingMessage(json);
                 processed++;
+            }
+
+            int processedApp = 0;
+            while (Volatile.Read(ref appReceiveOverflowSignaled) == 0 &&
+                   processedApp < Mathf.Max(1, maxAppMessagesPerFrame) &&
+                   TryDequeueAppMessage(out string appJson))
+            {
+                HandleIncomingMessage(appJson);
+                processedApp++;
             }
             
             if (!IsConnected()) return;
@@ -123,6 +163,7 @@ namespace com.imd.ackit.multi_xr.CustomWebSocket
 
             WebSocket socket = new($"ws://{serverIp}:{serverPort}");
             ws = socket;
+            Interlocked.Exchange(ref appReceiveOverflowSignaled, 0);
 
             ws.OnOpen += (_, __) => mainThreadActions.Enqueue(() =>
             {
@@ -138,17 +179,24 @@ namespace com.imd.ackit.multi_xr.CustomWebSocket
 
             ws.OnMessage += (_, e) =>
             {
-                // OnMessage pode vir de thread diferente -> fila thread-safe
-                messageQueue.Enqueue(e.Data);
+                // FromJson(string) aceita execução em background; o callback só classifica/enfileira.
+                // Eventos e APIs de cena continuam sendo executados por Update na thread Unity.
+                EnqueueIncomingMessage(e.Data);
             };
 
-            ws.OnClose += (_, __) => mainThreadActions.Enqueue(() =>
+            ws.OnClose += (_, __) =>
             {
-                Disconnected?.Invoke();
-                isClosing = false;
-                Debug.Log("❌ Desconectado do servidor");
-                StopSendLoops();
-            });
+                Interlocked.Exchange(ref appReceiveOverflowSignaled, 1);
+                mainThreadActions.Enqueue(() =>
+                {
+                    ResetAppSendQueue();
+                    ResetAppReceiveQueue();
+                    Disconnected?.Invoke();
+                    isClosing = false;
+                    Debug.Log("❌ Desconectado do servidor");
+                    StopSendLoops();
+                });
+            };
 
             ws.OnError += (_, e) =>
             {
@@ -167,6 +215,85 @@ namespace com.imd.ackit.multi_xr.CustomWebSocket
         // RECEBIMENTO
         // =========================
 
+        private void EnqueueIncomingMessage(string json)
+        {
+            MessageTypeWrapper wrapper;
+            try
+            {
+                wrapper = JsonUtility.FromJson<MessageTypeWrapper>(json);
+            }
+            catch (ArgumentException)
+            {
+                // Mensagem malformada: não deixar uma exceção escapar do callback de rede.
+                return;
+            }
+
+            if (wrapper == null || wrapper.type != "app")
+            {
+                messageQueue.Enqueue(json);
+                return;
+            }
+
+            if (Volatile.Read(ref appReceiveOverflowSignaled) != 0)
+                return;
+
+            int byteCount = Encoding.UTF8.GetByteCount(json);
+            string overflowReason = byteCount > MaxAppEnvelopeBytes
+                ? "Uma mensagem app excedeu o limite de 64 KiB UTF-8."
+                : null;
+            lock (appReceiveLock)
+            {
+                if (Volatile.Read(ref appReceiveOverflowSignaled) == 0 && overflowReason == null &&
+                    appReceiveQueue.Count < MaxQueuedAppReceiveMessages &&
+                    queuedAppReceiveBytes + byteCount <= MaxQueuedAppReceiveBytes)
+                {
+                    appReceiveQueue.Enqueue(new IncomingAppMessage { Json = json, ByteCount = byteCount });
+                    queuedAppReceiveBytes += byteCount;
+                    return;
+                }
+            }
+
+            SignalAppReceiveOverflow(overflowReason ?? "A fila de mensagens app excedeu sua capacidade.");
+        }
+
+        private bool TryDequeueAppMessage(out string json)
+        {
+            lock (appReceiveLock)
+            {
+                if (appReceiveQueue.Count == 0)
+                {
+                    json = null;
+                    return false;
+                }
+
+                IncomingAppMessage message = appReceiveQueue.Dequeue();
+                queuedAppReceiveBytes -= message.ByteCount;
+                json = message.Json;
+                return true;
+            }
+        }
+
+        private void SignalAppReceiveOverflow(string reason)
+        {
+            if (Interlocked.Exchange(ref appReceiveOverflowSignaled, 1) != 0)
+                return;
+
+            mainThreadActions.Enqueue(() =>
+            {
+                Debug.LogError(reason + " Desconectando para evitar perda silenciosa do estado compartilhado.", this);
+                CloseConnection();
+            });
+        }
+
+        private void ResetAppReceiveQueue()
+        {
+            lock (appReceiveLock)
+            {
+                appReceiveQueue.Clear();
+                queuedAppReceiveBytes = 0;
+            }
+        }
+
         void HandleIncomingMessage(string json)
         {
             var wrapper = JsonUtility.FromJson<MessageTypeWrapper>(json);
@@ -176,11 +303,11 @@ namespace com.imd.ackit.multi_xr.CustomWebSocket
             {
                 case "welcome":
                     WelcomeMessage welcome = JsonUtility.FromJson<WelcomeMessage>(json); 
-                    WelcomeReceived?.Invoke(welcome);
                     playerId = welcome.selfId;
+                    hasJoined = true;
+                    WelcomeReceived?.Invoke(welcome);
 
                     if(welcome.role != "desktop_viewer") StartSendLoops();
-                    hasJoined = true;
 
                     Debug.Log($"Conexão estabelecida com {welcome.sessionId}");
                     break;
@@ -210,6 +337,21 @@ namespace com.imd.ackit.multi_xr.CustomWebSocket
                     PoseReceived?.Invoke(pose);
                     break;
 
+                case "app":
+                    AppMessage appMessage = JsonUtility.FromJson<AppMessage>(json);
+
+                    if (Encoding.UTF8.GetByteCount(json) > MaxAppEnvelopeBytes ||
+                        appMessage == null ||
+                        appMessage.protocolVersion != 1 ||
+                        appMessage.type != "app" ||
+                        string.IsNullOrWhiteSpace(appMessage.playerId) ||
+                        string.IsNullOrWhiteSpace(appMessage.channel) ||
+                        !IsAllowedAppChannel(appMessage.channel) ||
+                        string.IsNullOrWhiteSpace(appMessage.payload))
+                        break;
+
+                    AppMessageReceived?.Invoke(appMessage);
+                    break;
                 case "error":
                     ErrorMessage error = JsonUtility.FromJson<ErrorMessage>(json);
                     ErrorReceived?.Invoke(error);
@@ -218,8 +360,8 @@ namespace com.imd.ackit.multi_xr.CustomWebSocket
                     {
                         CloseConnection();
                     }
-
                     break;
+
             }
         }
 
@@ -373,6 +515,109 @@ namespace com.imd.ackit.multi_xr.CustomWebSocket
             return PositionChanged(current.position, previous.position) || RotationChanged(current.rotation, previous.rotation);
         }
 
+        
+        /// <summary>
+        /// Enqueues an application message for ordered asynchronous sending. True means accepted into
+        /// the local queue, not acknowledged by the server.
+        /// </summary>
+        public bool SendAppMessage(string channel, string payload, string to = null)
+        {
+            if (!IsConnected() || !hasJoined ||
+                string.IsNullOrWhiteSpace(channel) || !IsAllowedAppChannel(channel) ||
+                string.IsNullOrWhiteSpace(payload))
+                return false;
+
+            if (to == string.Empty)
+                to = null;
+            else if (to != null &&
+                     (string.IsNullOrWhiteSpace(to) || to.Length > MaxAppRecipientLength || to != to.Trim()))
+                return false;
+
+            var message = new AppMessage
+            {
+                protocolVersion = 1,
+                type = "app",
+                channel = channel,
+                payload = payload,
+                to = string.IsNullOrEmpty(to) ? null : to
+            };
+
+            string json = JsonUtility.ToJson(message);
+            int byteCount = Encoding.UTF8.GetByteCount(json);
+            if (byteCount > MaxAppEnvelopeBytes ||
+                appSendQueue.Count + (appSendInProgress ? 1 : 0) >= MaxPendingAppMessages ||
+                queuedAppBytes + inFlightAppBytes + byteCount > MaxPendingAppBytes)
+                return false;
+
+            appSendQueue.Enqueue(new PendingAppSend { Json = json, ByteCount = byteCount });
+            queuedAppBytes += byteCount;
+            StartNextAppSend();
+            return true;
+        }
+
+        private static bool IsAllowedAppChannel(string channel) => channel == "pointer";
+
+        private void StartNextAppSend()
+        {
+            if (appSendInProgress || appSendQueue.Count == 0)
+                return;
+
+            WebSocket socket = ws;
+            if (socket == null || socket.ReadyState != WebSocketState.Open || !hasJoined)
+            {
+                ResetAppSendQueue();
+                return;
+            }
+
+            PendingAppSend pending = appSendQueue.Dequeue();
+            queuedAppBytes -= pending.ByteCount;
+            inFlightAppBytes = pending.ByteCount;
+            appSendInProgress = true;
+            int generation = appSendGeneration;
+
+            try
+            {
+                socket.SendAsync(pending.Json, completed =>
+                    mainThreadActions.Enqueue(() => CompleteAppSend(socket, generation, completed)));
+            }
+            catch (Exception exception)
+            {
+                if (generation == appSendGeneration && ReferenceEquals(ws, socket))
+                {
+                    Debug.LogWarning($"Falha ao enviar mensagem da aplicação: {exception.Message}", this);
+                    ResetAppSendQueue();
+                }
+            }
+        }
+
+        private void CompleteAppSend(WebSocket socket, int generation, bool completed)
+        {
+            // Uma conclusão atrasada de uma conexão antiga não pode mexer na fila atual.
+            if (generation != appSendGeneration || !ReferenceEquals(ws, socket))
+                return;
+
+            inFlightAppBytes = 0;
+            appSendInProgress = false;
+
+            if (!completed)
+            {
+                Debug.LogWarning("O WebSocket não concluiu o envio da mensagem da aplicação.", this);
+                ResetAppSendQueue();
+                return;
+            }
+
+            StartNextAppSend();
+        }
+
+        private void ResetAppSendQueue()
+        {
+            appSendGeneration++;
+            appSendQueue.Clear();
+            queuedAppBytes = 0;
+            inFlightAppBytes = 0;
+            appSendInProgress = false;
+        }
+
         private void OnApplicationQuit() => CloseConnection();
         private void OnDestroy() => CloseConnection();
 
@@ -382,6 +627,9 @@ namespace com.imd.ackit.multi_xr.CustomWebSocket
 
             WebSocket socket = ws;
             ws = null;
+            ResetAppSendQueue();
+            Interlocked.Exchange(ref appReceiveOverflowSignaled, 1);
+            ResetAppReceiveQueue();
 
             if (socket == null) return;
             isClosing = true;

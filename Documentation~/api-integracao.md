@@ -1,6 +1,6 @@
 # API e guia de integração
 
-Este documento descreve a API pública disponível para um projeto consumidor do pacote `multi_xr`. Os campos serializados no Inspector são configuráveis no Unity; a API C# exposta atualmente oferece propriedades somente para leitura, eventos e dois métodos públicos.
+Este documento descreve a API pública disponível para um projeto consumidor do pacote `multi_xr`. Os campos serializados no Inspector são configuráveis no Unity; a API C# expõe propriedades somente para leitura, eventos e métodos públicos.
 
 ## WebSocketSessionClient
 
@@ -14,7 +14,8 @@ Adicione o componente a um GameObject da cena. A conexão e o envio do `join` co
 |---|---:|---|
 | `Server Ip` | `192.168.0.10` | Endereço do servidor WebSocket. |
 | `Server Port` | `7777` | Porta, atualmente configurada como texto. |
-| `Max Messages Per Frame` | `20` | Limite de mensagens recebidas processadas por frame. |
+| `Max Messages Per Frame` | `20` | Limite por frame para mensagens de sessão e poses. |
+| `Max App Messages Per Frame` | `10` | Limite independente por frame para mensagens `app`. |
 | `Room Id` | `sala-local` | Sala solicitada no `join`. |
 | `Role` | `quest_player` | Papel enviado ao servidor: `quest_player` ou `desktop_viewer`. |
 | `Display Name` | `Quest A` | Nome enviado no `join`. |
@@ -47,9 +48,16 @@ Color DisplayColor { get; }
 ```csharp
 bool IsConnected();
 void CloseConnection();
+bool SendAppMessage(string channel, string payload, string to = null);
 ```
 
 `IsConnected` informa se o socket está aberto. `CloseConnection` inicia o fechamento da conexão e encerra os loops de envio. Para mudar endereço, sala, papel, nome ou cor, configure os campos no Inspector antes de iniciar o componente.
+
+`SendAppMessage` deve ser chamado na thread principal da Unity. Nesta versão, `channel` aceita somente `pointer`; `payload` é texto opaco para o pacote. `to` nulo ou vazio transmite aos demais participantes; um id direciona a mensagem a um participante, que o servidor ainda precisa validar. O método retorna `true` quando o envelope foi aceito pela fila local, não quando foi confirmado pelo servidor.
+
+O cliente limita cada envelope serializado a 64 KiB UTF-8, e a fila de saída a 128 KiB e 256 mensagens, contando o envio em andamento. Se estiver desconectado, os argumentos forem inválidos, a mensagem exceder o limite ou a fila estiver cheia, retorna `false`. Envios aceitos são enviados em ordem por `SendAsync`, um por vez. O callback confirma apenas a conclusão local do envio WebSocket; não é confirmação de aplicação.
+
+Mensagens recebidas são classificadas no callback de rede e encaminhadas a filas separadas: `Max Messages Per Frame` limita mensagens de sessão/poses e `Max App Messages Per Frame` limita mensagens `app`. A fila recebida de aplicação aceita até 128 mensagens e 256 KiB; mensagens individuais continuam limitadas a 64 KiB UTF-8. Se esse limite for excedido, o cliente registra erro e fecha a conexão para evitar descartar silenciosamente pontos de desenho e deixar os participantes com estado divergente. A fila de saída e a de entrada são independentes.
 
 ### Eventos
 
@@ -59,6 +67,7 @@ void CloseConnection();
 | `ParticipantJoined` | `Action<PlayerJoinedMessage>` | Quando outro participante entra. Não dispara para o próprio jogador. |
 | `ParticipantLeft` | `Action<PlayerLeftMessage>` | Quando um participante sai. |
 | `PoseReceived` | `Action<PlayerPoseMessage>` | Para cada pose válida e mais recente recebida de outro jogador. |
+| `AppMessageReceived` | `Action<AppMessage>` | Para cada mensagem `app` válida do canal `pointer`, incluindo o `playerId` de origem definido pelo servidor. |
 | `ErrorReceived` | `Action<ErrorMessage>` | Quando chega uma mensagem `error`; em rejeição antes do join o cliente fecha a conexão. |
 | `ConnectionFailed` | `UnityEvent` | Quando o WebSocket reporta erro. |
 | `Disconnected` | `UnityEvent` | Quando o WebSocket fecha. |
@@ -97,7 +106,7 @@ As mensagens de rede são enfileiradas e os eventos acima são disparados durant
 
 Namespace: `com.imd.ackit.multi_xr.Protocol`.
 
-Os tipos públicos correspondem às mensagens descritas em [protocol-v1.md](protocol-v1.md): `JoinMessage`, `WelcomeMessage`, `PlayerData`, `PlayerJoinedMessage`, `PlayerLeftMessage`, `PoseMessage`, `PlayerPoseMessage` e `ErrorMessage`. Os dados de pose usam posição `(x,y,z)` e rotação quaternion `(x,y,z,w)` relativos ao `NetworkOrigin`. O roster e `player_joined` carregam `displayColor` como `RRGGBB`.
+Os tipos públicos correspondem às mensagens descritas em [protocol-v1.md](protocol-v1.md): `JoinMessage`, `WelcomeMessage`, `PlayerData`, `PlayerJoinedMessage`, `PlayerLeftMessage`, `PoseMessage`, `PlayerPoseMessage`, `AppMessage` e `ErrorMessage`. Os dados de pose usam posição `(x,y,z)` e rotação quaternion `(x,y,z,w)` relativos ao `NetworkOrigin`. O roster e `player_joined` carregam `displayColor` como `RRGGBB`.
 
 Exemplo de conversão da cor para Unity:
 
@@ -143,3 +152,9 @@ O pacote disponibiliza a cor, mas não altera automaticamente materiais do prefa
 3. Se precisar de avatares remotos, crie o prefab com `RemotePlayerAvatar` e seus transforms, então adicione `RemotePlayerSpawner` e associe o prefab.
 4. Inscreva os sistemas consumidores nos eventos necessários e remova as inscrições em `OnDisable`/`OnDestroy`.
 5. Consulte [protocol-v1.md](protocol-v1.md) para o contrato de fio e [Contrato_Multiplayer_WebSocket_v1_Rascunho.md](../../../Contrato_Multiplayer_WebSocket_v1_Rascunho.md) para o contrato funcional cliente-servidor.
+
+## Integração do Pointer no Cave-visualization
+
+O componente `MultiXRPointerTransport` adapta o canal `pointer` de `WebSocketSessionClient` para `PointerTransport`. O prefab `Pointer Network (multi_xr)` contém `PointerNetworkSync` e `MultiXRPointerTransport` no mesmo GameObject; `WebSocketSessionClient` pode ser outro GameObject da cena e é localizado automaticamente. `DrawingBoard` e `MeasurementBoard` também são localizados/criados quando as referências do Inspector ficam vazias. Garanta que exista apenas uma sessão WebSocket ativa por participante.
+
+O Pointer envia alterações e o feixe em mensagens `app`; ao entrar, pede snapshot a um peer. Snapshots são particionados em blocos de até 128 pontos ou 16 medidas, com limite interno de 28 KiB UTF-8 por payload. Alterações ao vivo ficam em buffer durante o snapshot (até 128 mensagens/256 KiB). Se a capacidade se esgotar, o transporte fecha a sessão, pois perder pontos poderia deixar o estado inconsistente. A limpeza compartilhada remove individualmente os objetos do autor local; limpeza global é proibida pelo servidor.

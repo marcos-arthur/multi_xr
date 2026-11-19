@@ -118,3 +118,11 @@ O servidor usa códigos como `INVALID_MESSAGE`, `PROTOCOL_VERSION_UNSUPPORTED`, 
 ## Compatibilidade
 
 `displayColor` é obrigatório no `join` e nos dados de participante usados no roster/evento de entrada. Clientes e servidores anteriores que não implementem esse campo devem ser atualizados juntos. O servidor não transmite no `welcome` os dados de aparência do próprio jogador, pois o cliente já os configurou localmente.
+
+## Mensagens de aplicação (`app`)
+
+Após o `join`, o servidor aceita `app` de `quest_player` e `desktop_viewer`, atualmente apenas no canal `pointer`. O envelope completo tem limite de 64 KiB em UTF-8; o servidor limita cada origem a 240 mensagens e 2 MiB por janela de um segundo. O envio sem `to` vai a todos os outros participantes; `to` precisa identificar outro participante da mesma sala. O servidor injeta `playerId` no envelope de saída e não retransmite ao emissor. O cliente só considera `SendAppMessage` aceito quando entrou na fila local, sem confirmação de entrega.
+
+O `payload` é uma string contendo JSON do PointerWire v1. O servidor valida tipo, campos, limites e autoria dos objetos: remoção só pode atingir objetos registrados para o autor, e `strokes_clear`/`measures_clear` globais são rejeitados. IDs de objetos são mantidos em memória durante a vida do processo; não existe persistência quando todos saem ou o servidor reinicia. Snapshots direcionados usam `board_request` e `board_snapshot`, divididos em partes por traço/medida; as partes respeitam 28 KiB no Pointer para manter margem dentro do limite externo. O novo participante bufferiza alterações ao vivo até concluir snapshot, com teto de 128 mensagens/256 KiB; exceder o teto encerra a conexão para evitar estado silenciosamente divergente.
+
+Erros comuns incluem `UNKNOWN_MESSAGE_TYPE`, `UNKNOWN_APP_CHANNEL`, `APP_MESSAGE_TOO_LARGE`, `APP_RATE_LIMITED`, `INVALID_RECIPIENT`, `INVALID_POINTER_MESSAGE`, `POINTER_NOT_OWNED`, `POINTER_AUTHOR_MISMATCH`, `GLOBAL_CLEAR_FORBIDDEN` e `POINTER_CAPACITY_REACHED`. Três mensagens inválidas fecham a conexão. Sob backpressure, a conexão lenta é encerrada; o remetente não recebe confirmação de aplicação.
